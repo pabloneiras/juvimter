@@ -301,17 +301,22 @@ function M.sync_lsp_python_path(bufnr, python_path)
   if doc then
     doc.lsp_python_path = python_path
   end
+  -- Neovim answers the server's `workspace/configuration` pull requests from
+  -- `client.settings` (not `client.config.settings`), and basedpyright/pyright
+  -- re-read their config that way after `didChangeConfiguration`. Update both
+  -- tables, otherwise the server keeps the old interpreter.
+  local function apply(client, extra)
+    local settings = vim.tbl_deep_extend("force", client.settings or client.config.settings or {}, extra)
+    client.settings = settings
+    client.config.settings = settings
+    client:notify("workspace/didChangeConfiguration", { settings = settings })
+  end
+
   for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do
     if client.name == "basedpyright" or client.name == "pyright" then
-      client.config.settings = vim.tbl_deep_extend("force", client.config.settings or {}, {
-        python = { pythonPath = python_path },
-      })
-      client:notify("workspace/didChangeConfiguration", { settings = client.config.settings })
+      apply(client, { python = { pythonPath = python_path } })
     elseif client.name == "pylsp" then
-      client.config.settings = vim.tbl_deep_extend("force", client.config.settings or {}, {
-        pylsp = { plugins = { jedi = { environment = python_path } } },
-      })
-      client:notify("workspace/didChangeConfiguration", { settings = client.config.settings })
+      apply(client, { pylsp = { plugins = { jedi = { environment = python_path } } } })
     end
   end
 end
