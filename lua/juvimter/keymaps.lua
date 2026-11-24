@@ -113,6 +113,22 @@ function M.attach(bufnr)
     buffer.open_image(bufnr)
   end, "Open cell image externally")
 
+  map("n", km.preview_image, function()
+    buffer.preview_image(bufnr)
+  end, "Preview cell image (zoomable popup)")
+
+  map("n", km.zoom_in_image, function()
+    buffer.zoom_image(bufnr, 0.25)
+  end, "Zoom in inline image")
+
+  map("n", km.zoom_out_image, function()
+    buffer.zoom_image(bufnr, -0.25)
+  end, "Zoom out inline image")
+
+  map("n", km.zoom_reset_image, function()
+    buffer.zoom_image(bufnr, nil)
+  end, "Reset inline image zoom")
+
   -- Kernel & Variables
   map("n", km.select_kernel, function()
     buffer.select_kernel(bufnr)

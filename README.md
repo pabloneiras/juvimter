@@ -99,6 +99,8 @@ Run `:checkhealth juvimter` to verify detected kernels, Python bridge, and inlin
 | `n` | `<leader>jc` / `<leader>jC` | Clear cell output / Clear all outputs |
 | `n` | `<leader>jz` | Collapse / expand cell output |
 | `n` | `<leader>jo` | Inspect full cell output in floating window |
+| `n` | `<leader>jp` | Preview cell image in large zoomable floating lightbox (`+`/`-`/`0`) |
+| `n` | `<leader>j+` / `<leader>j-` / `<leader>j=` | Zoom in / zoom out / reset inline image size |
 | `n` | `<leader>ji` | Open cell image/plot externally |
 | `n` | `<leader>jK` | Select Jupyter kernel / Python venv |
 | `n` | `<leader>jI` / `<leader>jR` | Interrupt / Restart kernel |

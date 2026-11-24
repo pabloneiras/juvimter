@@ -386,10 +386,17 @@ function M.open_ipynb(bufnr, filepath)
   vim.b[bufnr].autoformat = false
   vim.b[bufnr].juvimter_active = true
 
-  -- Clean sign column for the VS Code left cell bar
+  -- Clean sign column and soft-wrap so long lines never clip off-screen
+  local function configure_win(win)
+    if vim.api.nvim_win_is_valid(win) then
+      vim.wo[win].signcolumn = "yes:1"
+      vim.wo[win].conceallevel = 2
+      vim.wo[win].wrap = true
+      vim.wo[win].linebreak = true
+    end
+  end
   for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
-    vim.wo[win].signcolumn = "yes:1"
-    vim.wo[win].conceallevel = 2
+    configure_win(win)
   end
 
   -- Create kernel session holder for this buffer
@@ -1181,16 +1188,16 @@ function M.inspect_output(bufnr)
   vim.keymap.set("n", "<Esc>", close, { buffer = buf, silent = true })
 end
 
---- Open the rendered plot/image of the current cell in the OS image viewer.
+--- Resolve the latest cached image path on the current cell.
 ---@param bufnr number
-function M.open_image(bufnr)
+---@return string?
+local function get_cell_image_path(bufnr)
   local _, _, cell = M.current_cell_index(bufnr)
   if not cell then
-    return
+    return nil
   end
   local paths = cell._image_paths or {}
   if #paths == 0 then
-    -- Attempt to cache on demand if outputs have image data
     for _, out in ipairs(cell.outputs or {}) do
       local data = out.data or {}
       local mime = data["image/png"] and "image/png" or (data["image/jpeg"] and "image/jpeg" or nil)
@@ -1202,11 +1209,46 @@ function M.open_image(bufnr)
       end
     end
   end
-  if #paths == 0 then
+  return paths[#paths]
+end
+
+--- Open the rendered plot/image of the current cell in the OS image viewer.
+---@param bufnr number
+function M.open_image(bufnr)
+  local path = get_cell_image_path(bufnr)
+  if not path then
     vim.notify("juvimter: current cell has no image output", vim.log.levels.INFO)
     return
   end
-  images.open_external(paths[#paths])
+  images.open_external(path)
+end
+
+--- Open a large interactive floating image preview (lightbox with +/- zoom) inside Neovim.
+---@param bufnr number
+function M.preview_image(bufnr)
+  local path = get_cell_image_path(bufnr)
+  if not path then
+    vim.notify("juvimter: current cell has no image output", vim.log.levels.INFO)
+    return
+  end
+  images.open_preview(path)
+end
+
+--- Zoom the inline plot of the current cell (delta > 0 zoom in, < 0 zoom out, nil reset).
+---@param bufnr number
+---@param delta number?
+function M.zoom_image(bufnr, delta)
+  local _, _, cell = M.current_cell_index(bufnr)
+  if not cell then
+    return
+  end
+  if delta == nil then
+    cell.image_scale = 1.0
+  else
+    local cur = cell.image_scale or 1.0
+    cell.image_scale = math.max(0.4, math.min(2.5, cur + delta))
+  end
+  M.refresh(bufnr)
 end
 
 function M.goto_next_cell(bufnr)

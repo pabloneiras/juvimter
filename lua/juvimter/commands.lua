@@ -28,6 +28,10 @@ local SUBCOMMANDS = {
   "toggle_output",
   "inspect",
   "open_image",
+  "preview_image",
+  "zoom_in",
+  "zoom_out",
+  "zoom_reset",
   "health",
 }
 
@@ -81,6 +85,10 @@ function M.register()
       toggle_output = function() buffer.toggle_output(bufnr) end,
       inspect = function() buffer.inspect_output(bufnr) end,
       open_image = function() buffer.open_image(bufnr) end,
+      preview_image = function() buffer.preview_image(bufnr) end,
+      zoom_in = function() buffer.zoom_image(bufnr, 0.25) end,
+      zoom_out = function() buffer.zoom_image(bufnr, -0.25) end,
+      zoom_reset = function() buffer.zoom_image(bufnr, nil) end,
     }
 
     local fn = actions[sub]

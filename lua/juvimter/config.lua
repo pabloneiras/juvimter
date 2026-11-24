@@ -88,9 +88,13 @@ M.defaults = {
     enabled = true,
     -- "auto" (detect Ghostty/Kitty Unicode placeholders), "kitty_unicode", "none"
     backend = "auto",
-    -- Max dimensions in terminal cells
-    max_width = 80,
-    max_height = 24,
+    -- Max dimensions in terminal cells (0 = adapt to window width)
+    max_width = 120,
+    max_height = 30,
+    -- Minimum target height in rows so small/low-DPI plots remain readable
+    min_height = 12,
+    -- Maximum upscale factor for small images
+    max_upscale = 2.5,
   },
 
   -- Variable explorer window
@@ -123,6 +127,10 @@ M.defaults = {
     toggle_output = "<leader>jz",
     inspect_output = "<leader>jo",
     open_image = "<leader>ji",
+    preview_image = "<leader>jp",
+    zoom_in_image = "<leader>j+",
+    zoom_out_image = "<leader>j-",
+    zoom_reset_image = "<leader>j=",
     select_kernel = "<leader>jK",
     interrupt_kernel = "<leader>jI",
     restart_kernel = "<leader>jR",

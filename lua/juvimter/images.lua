@@ -154,18 +154,43 @@ local function kitty_cmd(opts, payload, in_tmux)
 end
 
 --- Compute terminal grid size (cols, rows) fitting within max bounds while preserving aspect ratio.
+--- Supports smart upscaling of small plots and user zoom factor.
 ---@param px_w number
 ---@param px_h number
 ---@param max_cols number
 ---@param max_rows number
+---@param opts? { scale?: number, min_rows?: number, max_upscale?: number, fill?: boolean }
 ---@return number, number
-function M.fit_cells(px_w, px_h, max_cols, max_rows)
+function M.fit_cells(px_w, px_h, max_cols, max_rows, opts)
+  opts = opts or {}
   local sz = M.cell_pixel_size()
-  local cols = px_w / sz.cell_w
-  local rows = px_h / sz.cell_h
-  local scale = math.min(1, max_cols / math.max(cols, 1), max_rows / math.max(rows, 1))
-  cols = math.max(2, math.floor(cols * scale + 0.5))
-  rows = math.max(1, math.floor(rows * scale + 0.5))
+  local raw_cols = math.max(1, px_w / sz.cell_w)
+  local raw_rows = math.max(1, px_h / sz.cell_h)
+
+  local user_scale = opts.scale or 1.0
+  local min_rows = opts.min_rows or 0
+  local max_upscale = opts.max_upscale or (config.options.images.max_upscale or 2.5)
+
+  local fit_scale = math.min(max_cols / raw_cols, max_rows / raw_rows)
+  local target_scale
+
+  if opts.fill then
+    -- Lightbox mode: fill available window cleanly up to max_upscale
+    target_scale = math.min(fit_scale, max_upscale) * user_scale
+  else
+    target_scale = math.min(1.0, fit_scale)
+    -- Upscale tiny/low-DPI images so they stay readable inline
+    if min_rows > 0 and (raw_rows * target_scale) < min_rows then
+      local needed = min_rows / raw_rows
+      target_scale = math.min(fit_scale, math.min(needed, max_upscale))
+    end
+    target_scale = target_scale * user_scale
+  end
+
+  -- Never exceed max_cols / max_rows bounds (except slight zoom within max_cols)
+  local final_scale = math.min(target_scale, fit_scale)
+  local cols = math.max(4, math.floor(raw_cols * final_scale + 0.5))
+  local rows = math.max(2, math.floor(raw_rows * final_scale + 0.5))
   return cols, rows
 end
 
@@ -202,40 +227,13 @@ function M.ensure_cached(b64_data, mime)
   return { path = path, width = w, height = h, hash = hash }
 end
 
---- Prepare virtual lines to render an image inline below a cell.
---- Returns: virt_lines (array of extmark chunk lines), image_path (for external open).
----@param b64_data string|string[]
----@param mime string
----@param win_width? number
----@return table[], string?
-function M.render_virt_lines(b64_data, mime, win_width)
-  local cached = M.ensure_cached(b64_data, mime)
-  if not cached then
-    return { { { " [Image decode error]", "JuvimterOutputError" } } }, nil
-  end
-
-  local icon = config.options.ui.icons.image
-  local term = M.detect_terminal()
-
-  if not term.supported or not term.unicode_placeholders or mime ~= "image/png" or vim.fn.has("gui_running") == 1 then
-    local badge = string.format(
-      " %s Image (%dx%d %s) — press %s to open",
-      icon,
-      cached.width,
-      cached.height,
-      mime:gsub("^image/", ""):upper(),
-      config.options.keymaps.open_image or "<leader>ji"
-    )
-    return { { { badge, "JuvimterImageBadge" } } }, cached.path
-  end
-
-  local max_w = config.options.images.max_width or 80
-  if win_width and win_width > 12 then
-    max_w = math.min(max_w, win_width - 8)
-  end
-  local max_h = config.options.images.max_height or 24
-  local cols, rows = M.fit_cells(cached.width, cached.height, max_w, max_h)
-
+--- Transmit a cached PNG to the terminal and return Unicode placeholder virt_lines.
+---@param cached { path: string, width: number, height: number, hash: string }
+---@param cols number
+---@param rows number
+---@param term table
+---@return table[]
+local function build_kitty_grid(cached, cols, rows, term)
   local cache_key = string.format("%s_%dx%d", cached.hash, cols, rows)
   local entry = transmitted[cache_key]
 
@@ -249,7 +247,6 @@ function M.render_virt_lines(b64_data, mime, win_width)
     local hl = string.format("JuvimterImg_%x", id)
     vim.api.nvim_set_hl(0, hl, { fg = id, sp = 1, nocombine = true })
 
-    -- Transmit PNG from temp file (t=f) and create Unicode virtual placement (U=1)
     local b64_path = vim.base64.encode(cached.path)
     kitty_cmd({ a = "t", f = 100, t = "f", i = id, q = 2 }, b64_path, term.in_tmux)
     kitty_cmd({ a = "p", U = 1, i = id, p = 1, c = cols, r = rows, q = 2 }, nil, term.in_tmux)
@@ -272,7 +269,168 @@ function M.render_virt_lines(b64_data, mime, win_width)
     local row_str = PLACEHOLDER .. diacritic_chars[r] .. diacritic_chars[1] .. tail_placeholders
     lines[#lines + 1] = { { row_str, entry.hl } }
   end
+  return lines
+end
+
+--- Prepare virtual lines to render an image inline below a cell.
+--- Returns: virt_lines (array of extmark chunk lines), image_path (for preview/external open).
+---@param b64_data string|string[]
+---@param mime string
+---@param win_width? number
+---@param scale? number
+---@return table[], string?
+function M.render_virt_lines(b64_data, mime, win_width, scale)
+  local cached = M.ensure_cached(b64_data, mime)
+  if not cached then
+    return { { { " [Image decode error]", "JuvimterOutputError" } } }, nil
+  end
+
+  local icon = config.options.ui.icons.image
+  local term = M.detect_terminal()
+
+  if not term.supported or not term.unicode_placeholders or mime ~= "image/png" or vim.fn.has("gui_running") == 1 then
+    local badge = string.format(
+      " %s Image (%dx%d %s) — %s preview · %s open",
+      icon,
+      cached.width,
+      cached.height,
+      mime:gsub("^image/", ""):upper(),
+      config.options.keymaps.preview_image or "<leader>jp",
+      config.options.keymaps.open_image or "<leader>ji"
+    )
+    return { { { badge, "JuvimterImageBadge" } } }, cached.path
+  end
+
+  local cfg_max_w = config.options.images.max_width or 120
+  local max_w = (cfg_max_w > 0) and cfg_max_w or 200
+  if win_width and win_width > 12 then
+    max_w = math.min(max_w, win_width - 6)
+  end
+  local zoom = scale or 1.0
+  local max_h = math.floor((config.options.images.max_height or 30) * math.max(1.0, zoom))
+  local min_h = config.options.images.min_height or 12
+  local cols, rows = M.fit_cells(cached.width, cached.height, max_w, max_h, {
+    scale = zoom,
+    min_rows = min_h,
+  })
+
+  local lines = build_kitty_grid(cached, cols, rows, term)
   return lines, cached.path
+end
+
+--- Open a large interactive floating preview (lightbox) of a cached PNG image inside Neovim.
+---@param path string
+function M.open_preview(path)
+  if not path or vim.fn.filereadable(path) == 0 then
+    vim.notify("juvimter: image file not found", vim.log.levels.WARN)
+    return
+  end
+
+  local term = M.detect_terminal()
+  if not term.supported or not term.unicode_placeholders or not path:match("%.png$") then
+    M.open_external(path)
+    return
+  end
+
+  local f = io.open(path, "rb")
+  if not f then
+    M.open_external(path)
+    return
+  end
+  local bytes = f:read("*a")
+  f:close()
+  local px_w, px_h = M.parse_dimensions(bytes, "image/png")
+  local hash = vim.fn.sha256(bytes):sub(1, 20)
+  local cached = { path = path, width = px_w, height = px_h, hash = hash }
+
+  local ui = vim.api.nvim_list_uis()[1]
+  local win_w = math.max(40, math.floor((ui and ui.width or 120) * 0.88))
+  local win_h = math.max(16, math.floor((ui and ui.height or 40) * 0.84))
+  local row = math.floor(((ui and ui.height or 40) - win_h) / 2)
+  local col = math.floor(((ui and ui.width or 120) - win_w) / 2)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "" })
+  vim.bo[buf].modifiable = false
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = win_w,
+    height = win_h,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = string.format(" 󰋩 Image Preview (%dx%d)  [+/-: zoom · 0: fit · o: external · q: close] ", px_w, px_h),
+    title_pos = "center",
+  })
+
+  local ns = vim.api.nvim_create_namespace("juvimter_img_preview")
+  local zoom = 1.0
+
+  local function render_preview()
+    if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_win_is_valid(win) then
+      return
+    end
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    local cols, rows = M.fit_cells(px_w, px_h, win_w - 2, win_h - 1, {
+      scale = zoom,
+      max_upscale = 4.0,
+      fill = true,
+    })
+    local pad_left = math.max(0, math.floor((win_w - cols) / 2))
+    local pad_top = math.max(0, math.floor((win_h - rows) / 2))
+    local grid = build_kitty_grid(cached, cols, rows, term)
+
+    local vlines = {}
+    for _ = 1, pad_top do
+      vlines[#vlines + 1] = { { "", "Normal" } }
+    end
+    for _, gl in ipairs(grid) do
+      if pad_left > 0 then
+        vlines[#vlines + 1] = { { string.rep(" ", pad_left), "Normal" }, gl[1] }
+      else
+        vlines[#vlines + 1] = gl
+      end
+    end
+    vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
+      virt_lines = vlines,
+      virt_lines_above = false,
+    })
+  end
+
+  local close = function()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+
+  vim.keymap.set("n", "q", close, { buffer = buf, silent = true })
+  vim.keymap.set("n", "<Esc>", close, { buffer = buf, silent = true })
+  vim.keymap.set("n", "o", function()
+    M.open_external(path)
+  end, { buffer = buf, silent = true })
+  vim.keymap.set("n", "+", function()
+    zoom = math.min(2.5, zoom + 0.2)
+    render_preview()
+  end, { buffer = buf, silent = true })
+  vim.keymap.set("n", "=", function()
+    zoom = math.min(2.5, zoom + 0.2)
+    render_preview()
+  end, { buffer = buf, silent = true })
+  vim.keymap.set("n", "-", function()
+    zoom = math.max(0.3, zoom - 0.2)
+    render_preview()
+  end, { buffer = buf, silent = true })
+  vim.keymap.set("n", "0", function()
+    zoom = 1.0
+    render_preview()
+  end, { buffer = buf, silent = true })
+
+  render_preview()
 end
 
 --- Clear all transmitted Kitty images (called on VimLeavePre or manual refresh).

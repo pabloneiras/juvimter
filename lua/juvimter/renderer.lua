@@ -44,6 +44,95 @@ local function chunks_width(chunks)
   return w
 end
 
+--- Soft-wrap a list of `{ text, hl }` chunks to fit within `max_w` display columns.
+--- Breaks on whitespace when possible, falling back to character boundaries for long tokens.
+---@param chunks table[]
+---@param max_w number
+---@return table[][]
+local function wrap_chunks(chunks, max_w)
+  max_w = math.max(16, max_w)
+  if chunks_width(chunks) <= max_w then
+    return { chunks }
+  end
+
+  local lines = {}
+  local cur_line = {}
+  local cur_w = 0
+
+  local function flush()
+    lines[#lines + 1] = #cur_line > 0 and cur_line or { { "", "Normal" } }
+    cur_line = {}
+    cur_w = 0
+  end
+
+  local function push_seg(txt, hl)
+    if txt == "" then
+      return
+    end
+    local last = cur_line[#cur_line]
+    if last and last[2] == hl then
+      last[1] = last[1] .. txt
+    else
+      cur_line[#cur_line + 1] = { txt, hl }
+    end
+    cur_w = cur_w + vim.fn.strdisplaywidth(txt)
+  end
+
+  for _, chunk in ipairs(chunks) do
+    local text, hl = chunk[1], chunk[2]
+    local nchars = vim.fn.strchars(text)
+    local i = 0
+    while i < nchars do
+      -- Collect next word or whitespace run
+      local ch = vim.fn.strcharpart(text, i, 1)
+      local is_space = (ch == " " or ch == "\t")
+      local j = i + 1
+      while j < nchars do
+        local cj = vim.fn.strcharpart(text, j, 1)
+        local sp = (cj == " " or cj == "\t")
+        if sp ~= is_space then
+          break
+        end
+        j = j + 1
+      end
+      local token = vim.fn.strcharpart(text, i, j - i)
+      local tw = vim.fn.strdisplaywidth(token)
+
+      if cur_w + tw <= max_w then
+        push_seg(token, hl)
+      elseif is_space then
+        -- Drop trailing spaces at wrap boundary
+        flush()
+      elseif tw <= max_w then
+        -- Token fits on a fresh line
+        if cur_w > 0 then
+          flush()
+        end
+        push_seg(token, hl)
+      else
+        -- Very long unbroken token (URL, tensor repr, etc.): split by character
+        local k = 0
+        local tlen = j - i
+        while k < tlen do
+          local c = vim.fn.strcharpart(token, k, 1)
+          local cw = vim.fn.strdisplaywidth(c)
+          if cur_w + cw > max_w and cur_w > 0 then
+            flush()
+          end
+          push_seg(c, hl)
+          k = k + 1
+        end
+      end
+      i = j
+    end
+  end
+
+  if #cur_line > 0 or #lines == 0 then
+    flush()
+  end
+  return lines
+end
+
 ---@param ms number?
 ---@return string
 local function format_duration(ms)
@@ -216,17 +305,21 @@ local function build_output_virt_lines(cell, win_width)
   local image_paths = {}
   local text_line_count = 0
   local hidden_lines = 0
+  local wrap_w = math.max(24, win_width - 4)
 
-  local function push_text_line(chunks, bar_hl)
-    if text_line_count < max_lines then
-      local line = { { out_bar, bar_hl or "JuvimterOutputBar" } }
-      for _, c in ipairs(chunks) do
-        line[#line + 1] = c
+  local function push_text_line(chunks, bar_hl, no_wrap)
+    local wrapped = no_wrap and { chunks } or wrap_chunks(chunks, wrap_w)
+    for _, wline in ipairs(wrapped) do
+      if text_line_count < max_lines then
+        local line = { { out_bar, bar_hl or "JuvimterOutputBar" } }
+        for _, c in ipairs(wline) do
+          line[#line + 1] = c
+        end
+        vlines[#vlines + 1] = line
+        text_line_count = text_line_count + 1
+      else
+        hidden_lines = hidden_lines + 1
       end
-      vlines[#vlines + 1] = line
-      text_line_count = text_line_count + 1
-    else
-      hidden_lines = hidden_lines + 1
     end
   end
 
@@ -251,7 +344,7 @@ local function build_output_virt_lines(cell, win_width)
       -- 1. Inline image (PNG / JPEG)
       local img_mime = data["image/png"] and "image/png" or (data["image/jpeg"] and "image/jpeg" or nil)
       if img_mime then
-        local img_lines, img_path = images.render_virt_lines(data[img_mime], img_mime, win_width)
+        local img_lines, img_path = images.render_virt_lines(data[img_mime], img_mime, win_width, cell.image_scale)
         if img_path then
           image_paths[#image_paths + 1] = img_path
         end
@@ -261,6 +354,19 @@ local function build_output_virt_lines(cell, win_width)
             line[#line + 1] = c
           end
           vlines[#vlines + 1] = line
+        end
+        if img_path then
+          local zoom_pct = math.floor((cell.image_scale or 1.0) * 100 + 0.5)
+          local hint = string.format(
+            "%s %d%%  (%s preview · %s/%s zoom · %s open)",
+            icons.image,
+            zoom_pct,
+            config.options.keymaps.preview_image or "<leader>jp",
+            config.options.keymaps.zoom_in_image or "<leader>j+",
+            config.options.keymaps.zoom_out_image or "<leader>j-",
+            config.options.keymaps.open_image or "<leader>ji"
+          )
+          vlines[#vlines + 1] = { { out_bar, "JuvimterOutputBar" }, { hint, "JuvimterOutputMeta" } }
         end
       else
         -- 2. HTML Table (pandas / polars DataFrame)
@@ -274,7 +380,7 @@ local function build_output_virt_lines(cell, win_width)
 
         if rendered_table then
           for _, tl in ipairs(rendered_table) do
-            push_text_line(tl, "JuvimterOutputBar")
+            push_text_line(tl, "JuvimterOutputBar", true)
           end
         elseif data["text/plain"] then
           local txt = notebook.join_text(data["text/plain"])
@@ -534,17 +640,28 @@ function M.render(bufnr, doc)
             local row = start_body + offset - 1
             local stripped = raw_line:gsub("^" .. esc_prefix .. " ?", "", 1)
             local md_chunks = render_markdown_line(stripped, width)
+            local wrapped_md = wrap_chunks(md_chunks, width)
+            local first_line = wrapped_md[1]
             local raw_w = vim.fn.strdisplaywidth(raw_line)
-            local rendered_w = chunks_width(md_chunks)
+            local rendered_w = chunks_width(first_line)
             if raw_w > rendered_w then
-              md_chunks[#md_chunks + 1] = { string.rep(" ", raw_w - rendered_w), "Normal" }
+              first_line[#first_line + 1] = { string.rep(" ", raw_w - rendered_w), "Normal" }
             end
-            vim.api.nvim_buf_set_extmark(bufnr, ns_markdown, row, 0, {
-              virt_text = md_chunks,
+            local ext_opts = {
+              virt_text = first_line,
               virt_text_pos = "overlay",
               hl_mode = "replace",
               priority = 180,
-            })
+            }
+            if #wrapped_md > 1 then
+              local cont = {}
+              for k = 2, #wrapped_md do
+                cont[#cont + 1] = wrapped_md[k]
+              end
+              ext_opts.virt_lines = cont
+              ext_opts.virt_lines_above = false
+            end
+            vim.api.nvim_buf_set_extmark(bufnr, ns_markdown, row, 0, ext_opts)
           end
         end
       end
