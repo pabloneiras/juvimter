@@ -629,10 +629,13 @@ function M.render(bufnr, doc)
         end
       end
 
-      -- 3. Rendered Markdown Preview (when cursor is outside the markdown cell, or always in normal mode outside it)
+      -- 3. Rendered Markdown Preview (when cursor is outside the markdown cell)
+      local footer_row = math.min(r.end_row, line_count - 1)
+      local footer_md_cont = nil
+
       if cell.cell_type == "markdown" and config.options.ui.render_markdown and not is_active then
         local start_body = r.header_row + 1
-        local end_body = math.min(r.end_row, line_count - 1)
+        local end_body = footer_row
         if start_body <= end_body then
           local body_lines = vim.api.nvim_buf_get_lines(bufnr, start_body, end_body + 1, false)
           local esc_prefix = vim.pesc(prefix)
@@ -642,15 +645,14 @@ function M.render(bufnr, doc)
             local md_chunks = render_markdown_line(stripped, width)
             local wrapped_md = wrap_chunks(md_chunks, width)
             local first_line = wrapped_md[1]
-            local raw_w = vim.fn.strdisplaywidth(raw_line)
-            local rendered_w = chunks_width(first_line)
-            if raw_w > rendered_w then
-              first_line[#first_line + 1] = { string.rep(" ", raw_w - rendered_w), "Normal" }
-            end
+
+            -- Conceal the raw `# ...` line so `wrap = true` never wraps hidden trailing chars
             local ext_opts = {
+              end_row = row,
+              end_col = #raw_line,
+              conceal = "",
               virt_text = first_line,
-              virt_text_pos = "overlay",
-              hl_mode = "replace",
+              virt_text_pos = "inline",
               priority = 180,
             }
             if #wrapped_md > 1 then
@@ -658,8 +660,13 @@ function M.render(bufnr, doc)
               for k = 2, #wrapped_md do
                 cont[#cont + 1] = wrapped_md[k]
               end
-              ext_opts.virt_lines = cont
-              ext_opts.virt_lines_above = false
+              if row == footer_row then
+                -- Keep wrapped lines of the last markdown line strictly ABOVE the bottom border
+                footer_md_cont = cont
+              else
+                ext_opts.virt_lines = cont
+                ext_opts.virt_lines_above = false
+              end
             end
             vim.api.nvim_buf_set_extmark(bufnr, ns_markdown, row, 0, ext_opts)
           end
@@ -667,9 +674,13 @@ function M.render(bufnr, doc)
       end
 
       -- 4. Cell Footer Border + Inline Outputs + Cell Spacing
-      local footer_row = math.min(r.end_row, line_count - 1)
       local border_hl = is_active and "JuvimterCellBorderActive" or "JuvimterCellBorder"
       local virt_lines = {}
+      if footer_md_cont then
+        for _, cl in ipairs(footer_md_cont) do
+          virt_lines[#virt_lines + 1] = cl
+        end
+      end
       virt_lines[#virt_lines + 1] = { { "╰" .. string.rep("─", math.max(10, width - 2)) .. "╯", border_hl } }
 
       if cell.cell_type == "code" then
