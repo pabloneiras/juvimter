@@ -1,0 +1,87 @@
+*juvimter.txt*  VS Code-inspired Jupyter Notebooks natively inside Neovim
+
+==============================================================================
+CONTENTS                                                    *juvimter-contents*
+
+  1. Introduction ............................ |juvimter-intro|
+  2. Configuration ........................... |juvimter-config|
+  3. Commands ................................ |juvimter-commands|
+  4. Keymaps ................................. |juvimter-keymaps|
+  5. Statusline .............................. |juvimter-statusline|
+
+==============================================================================
+1. INTRODUCTION                                                *juvimter-intro*
+
+juvimter.nvim lets you open, edit, execute, and save standard nbformat 4.5
+`.ipynb` notebooks natively in Neovim with full LSP/Treesitter support,
+inline DataFrame tables, inline Kitty Graphics plots, and a Variable Explorer.
+
+==============================================================================
+2. CONFIGURATION                                              *juvimter-config*
+
+Call `require("juvimter").setup(opts)` with any overrides: >lua
+  require("juvimter").setup({
+    auto_attach = true,
+    auto_start_kernel = true,
+    venv_dirs = { "~/.venvs", "~/.virtualenvs" },
+    images = { enabled = true, backend = "auto", max_width = 80, max_height = 24 },
+  })
+<
+
+Run `:checkhealth juvimter` to inspect detected kernels and graphics support.
+
+==============================================================================
+3. COMMANDS                                                 *juvimter-commands*
+
+                                                                    *:Juvimter*
+:Juvimter {subcommand} [args]
+  new [file.ipynb]    Create and open a new notebook
+  kernel              Open the kernel picker
+  run                 Run current cell and advance
+  run_in_place        Run current cell in place
+  run_all             Run all cells top to bottom
+  run_above           Run all cells above current cell
+  run_below           Run current cell and all cells below
+  interrupt           Interrupt running kernel
+  restart             Restart kernel
+  variables           Open Variable Explorer floating panel
+  add_code            Add code cell below
+  add_markdown        Add markdown cell below
+  toggle_type         Toggle current cell between Code and Markdown
+  edit_markdown       Open pure-Markdown floating editor for Markdown cell
+  delete              Delete current cell
+  move_up / move_down Reorder current cell
+  split / merge       Split cell at cursor / merge with cell below
+  clear / clear_all   Clear current cell output / all outputs
+  toggle_output       Fold or unfold current cell output
+  inspect             Inspect full cell output in floating window
+  open_image          Open cell plot image externally
+  health              Run :checkhealth juvimter
+
+==============================================================================
+4. KEYMAPS                                                   *juvimter-keymaps*
+
+Buffer-local defaults in `.ipynb` buffers:
+  <S-CR>        Run cell and advance
+  <C-CR>        Run cell in place
+  <CR>          Edit Markdown cell (when cursor is on a Markdown cell)
+  <leader>jK    Select Jupyter kernel
+  <leader>jv    Open Variable Explorer
+  <leader>jA    Run all cells
+  <leader>ja    Add code cell below
+  <leader>jm    Add markdown cell below
+  <leader>jt    Toggle Code / Markdown
+  <leader>jd    Delete cell
+  <leader>jc    Clear output
+  <leader>ji    Open plot image externally
+  ]c / [c       Next / previous cell
+  ic / ac       Inner / around cell textobject
+
+==============================================================================
+5. STATUSLINE                                             *juvimter-statusline*
+
+For `lualine.nvim`: >lua
+  table.insert(opts.sections.lualine_x, 1, require("juvimter.statusline").lualine())
+<
+
+vim:tw=78:ts=8:ft=help:norl:
